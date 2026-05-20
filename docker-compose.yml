@@ -1,0 +1,128 @@
+services:
+  # ---------------------------------
+  # 1. MINIO (Data Lake - Bronze)
+  # ---------------------------------
+  minio:
+    image: minio/minio
+    container_name: minio_jumia_dl
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    env_file:
+      - .env
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_dl_data:/data
+    command: server /data --console-address ":9001"
+
+  # ---------------------------------
+  # 2. POSTGRES (Data Warehouse - Gold)
+  # ---------------------------------
+  postgres:
+    image: postgres:16
+    container_name: postgres_jumia_dw
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_dw_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------
+  # 3. AIRFLOW (Orchestrateur)
+  # ---------------------------------
+  airflow-webserver:
+    image: apache/airflow:2.9.1
+    container_name: airflow_jumia_webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      _PIP_ADDITIONAL_REQUIREMENTS: "minio requests beautifulsoup4 pandas psycopg2-binary lxml"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      DW_HOST: postgres
+      DW_PORT: 5432
+      DW_DATABASE: ${POSTGRES_DB}
+      DW_USER: ${POSTGRES_USER}
+      DW_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./sql:/opt/airflow/sql
+      - ./logs:/opt/airflow/logs
+    command: airflow webserver
+    restart: always
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1
+    container_name: airflow_jumia_scheduler
+    depends_on:
+      - airflow-webserver
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      _PIP_ADDITIONAL_REQUIREMENTS: "minio requests beautifulsoup4 pandas psycopg2-binary lxml"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./sql:/opt/airflow/sql
+      - ./logs:/opt/airflow/logs
+    command: airflow scheduler
+    restart: always
+
+  airflow-worker:
+    image: apache/airflow:2.9.1
+    container_name: airflow_jumia_worker
+    depends_on:
+      - airflow-webserver
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      _PIP_ADDITIONAL_REQUIREMENTS: "minio requests beautifulsoup4 pandas psycopg2-binary lxml"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./sql:/opt/airflow/sql
+      - ./logs:/opt/airflow/logs
+    command: airflow celery worker
+    restart: always
+
+# ---------------------------------
+# 4. VOLUMES PERSISTANTS
+# ---------------------------------
+volumes:
+  postgres_dw_data:
+  minio_dl_data:
+  logs:
